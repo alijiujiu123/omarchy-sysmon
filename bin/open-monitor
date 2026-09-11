@@ -1,0 +1,21 @@
+#!/bin/bash
+# Open the Sysmon detail view: a maximized btop, or focus it when already open.
+#
+# The window rule is applied here, at launch, instead of living in
+# ~/.config/hypr/hyprland.lua so the plugin stays self-contained on machines
+# that never configured it. maximize (not fullscreen) keeps the status bar -
+# and therefore the readout you just clicked - visible above btop.
+
+set -uo pipefail
+
+APP_ID="org.omarchy.sysmon"
+MONITOR="${SYSMON_MONITOR:-btop}"
+
+# Replace the rule from the previous launch: a rule that outlived a monitor or
+# layout change would size the window from stale geometry.
+hyprctl eval "
+  if sysmon_monitor_rule then sysmon_monitor_rule:set_enabled(false) end
+  sysmon_monitor_rule = hl.window_rule({ match = { class = \"$APP_ID\" }, float = true, maximize = true })
+" >/dev/null 2>&1
+
+exec omarchy-launch-or-focus-tui --app-id="$APP_ID" "$MONITOR"

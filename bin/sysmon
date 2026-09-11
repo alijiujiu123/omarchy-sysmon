@@ -1,0 +1,69 @@
+#!/bin/bash
+# Sysmon metrics: CPU %, memory %, and network down/up rate as one JSON line.
+#
+#   {"text":"CPU   4% MEM  30% ↓ 161K ↑12.0K","tooltip":"...","class":""}
+#
+# CPU and network come from the difference against the previous run, so the
+# first run after login only seeds the state file. Values are printed at fixed
+# width (3 for percentages, 5 for rates) because the bar is monospace: without
+# that, every digit-count change would resize the widget and shift its
+# neighbours. "class":"active" tells the widget to switch to the urgent colour.
+
+set -uo pipefail
+
+STATE="${XDG_RUNTIME_DIR:-/tmp}/omarchy-sysmon.state"
+
+human() { # bytes/s -> 812B / 1.2K / 14.6K / 1.4M
+  awk -v b="$1" 'BEGIN{
+    split("K M G T", u, " ")
+    i = 0
+    while (b >= 1024 && i < 4) { b /= 1024; i++ }
+    if (i == 0) printf "%dB", b
+    # One decimal only while the scaled value stays under three digits, so the
+    # result never exceeds five characters ("99.9K" yes, "146.5K" no).
+    else if (b < 100) printf "%.1f%s", b, u[i]
+    else printf "%.0f%s", b, u[i]
+  }'
+}
+
+# One awk pass over both files: CPU cumulative (total, idle) plus rx/tx bytes
+# summed across every non-loopback interface.
+read -r now total idle rx tx < <(
+  awk '
+    /^cpu / { for (i = 2; i <= 9; i++) t += $i; print "cpu", t, $5 + $6; next }
+    /:/     { n = $1; sub(/:$/, "", n)
+              if (n == "lo") next
+              r += $2; s += $10 }
+    END     { if (NR) print "net", r + 0, s + 0 }
+  ' /proc/stat /proc/net/dev |
+  awk 'NR==1{printf "%s %s %s ", systime(), $2, $3} /^net/{printf "%s %s\n", $2, $3}'
+)
+
+mem=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%d", (t-a)*100/t}' /proc/meminfo)
+
+cpu="--"; dn=0; un=0
+
+if [[ -f $STATE ]]; then
+  read -r pnow ptotal pidle prx ptx < "$STATE"
+  dt=$(awk -v a="$now" -v b="$pnow" 'BEGIN{print a-b}')
+  cpu=$(awk -v t="$total" -v pt="$ptotal" -v i="$idle" -v pi="$pidle" '
+        BEGIN{ d = t - pt; printf (d > 0) ? "%d" : "--", (d > 0) ? 100*(d-(i-pi))/d : 0 }')
+  # n >= p guards against a counter reset: an interface going down rewinds
+  # /proc/net/dev, which would otherwise print a negative or absurd rate.
+  dn=$(awk -v d="$dt" -v n="$rx" -v p="$prx" 'BEGIN{printf (d > 0 && n >= p) ? "%d" : "0", (d > 0 && n >= p) ? (n-p)/d : 0}')
+  un=$(awk -v d="$dt" -v n="$tx" -v p="$ptx" 'BEGIN{printf (d > 0 && n >= p) ? "%d" : "0", (d > 0 && n >= p) ? (n-p)/d : 0}')
+fi
+
+printf '%s %s %s %s %s\n' "$now" "$total" "$idle" "$rx" "$tx" > "$STATE"
+
+klass=""
+(( ${cpu/--/0} >= 85 )) && klass="active"
+
+cpu_pad=$(printf '%3s' "$cpu")
+mem_pad=$(printf '%3d' "$mem")
+dn_h=$(human "$dn"); un_h=$(human "$un")
+dn_pad=$(printf '%5s' "$dn_h"); un_pad=$(printf '%5s' "$un_h")
+
+printf '{"text":"CPU %s%% MEM %s%% \342\206\223%s \342\206\221%s","tooltip":"CPU %s%%  MEM %s%%  net \342\206\223%s/s \342\206\221%s/s","class":"%s"}\n' \
+  "$cpu_pad" "$mem_pad" "$dn_pad" "$un_pad" \
+  "$cpu" "$mem" "$dn_h" "$un_h" "$klass"
