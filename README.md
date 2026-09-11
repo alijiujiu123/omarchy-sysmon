@@ -13,7 +13,7 @@ the window instead of opening a second one.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<you>/omarchy-sysmon.git --enable --yes
+omarchy plugin add https://github.com/alijiujiu123/omarchy-sysmon.git --enable --yes
 omarchy bar move alijiujiu.sysmon --section center --after omarchy.spacer
 ```
 
